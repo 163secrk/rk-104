@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView, QAbst
 from .models import VideoTask, VIDEO_EXTENSIONS
 
 
-COLUMN_LABELS = ["状态", "文件名", "大小", "格式", "绝对路径"]
+COLUMN_LABELS = ["状态", "文件名", "大小", "格式", "进度", "绝对路径"]
 
 
 class TaskTableWidget(QTableWidget):
@@ -29,7 +29,8 @@ class TaskTableWidget(QTableWidget):
         header.setSectionResizeMode(1, QHeaderView.Stretch)
         header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
         header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.Stretch)
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.Stretch)
 
         self._existing_paths: set[str] = set()
         self._drag_hover_inside = False
@@ -106,10 +107,12 @@ class TaskTableWidget(QTableWidget):
         name_item = QTableWidgetItem(task.file_name or Path(task.file_path).name)
         size_item = QTableWidgetItem(VideoTask.format_size(task.file_size))
         ext_item = QTableWidgetItem(task.extension.lstrip(".").upper())
+        progress_text = f"{task.progress}%" if task.progress > 0 else ""
+        progress_item = QTableWidgetItem(progress_text)
         path_item = QTableWidgetItem(task.file_path)
 
-        for col, item in enumerate([status_item, name_item, size_item, ext_item, path_item]):
-            item.setTextAlignment(Qt.AlignVCenter | (Qt.AlignHCenter if col in (0, 2, 3) else Qt.AlignLeft))
+        for col, item in enumerate([status_item, name_item, size_item, ext_item, progress_item, path_item]):
+            item.setTextAlignment(Qt.AlignVCenter | (Qt.AlignHCenter if col in (0, 2, 3, 4) else Qt.AlignLeft))
             if task.status == "错误":
                 item.setForeground(Qt.red)
             self.setItem(row, col, item)
@@ -121,7 +124,7 @@ class TaskTableWidget(QTableWidget):
     def remove_selected_rows(self) -> None:
         rows = sorted({index.row() for index in self.selectedIndexes()}, reverse=True)
         for row in rows:
-            path_item = self.item(row, 4)
+            path_item = self.item(row, 5)
             if path_item:
                 self._existing_paths.discard(path_item.text())
             self.removeRow(row)

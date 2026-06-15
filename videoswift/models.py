@@ -10,6 +10,9 @@ VIDEO_EXTENSIONS = {
 }
 
 
+OUTPUT_FORMATS = {".mp4", ".mkv", ".avi"}
+
+
 @dataclass
 class VideoTask:
     file_path: str
@@ -19,6 +22,8 @@ class VideoTask:
     status: str = "等待解析"
     duration: Optional[float] = None
     error: Optional[str] = None
+    output_format: str = ""
+    progress: int = 0
 
     def resolve_basic(self) -> None:
         p = Path(self.file_path)
