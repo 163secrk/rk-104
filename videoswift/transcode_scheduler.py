@@ -38,19 +38,21 @@ class TranscodeWorker(QObject):
     def is_running(self) -> bool:
         return self._process is not None and self._process.state() != QProcess.NotRunning
 
-    def start(self, ffmpeg_path: str = "ffmpeg") -> None:
+    _TIME_PATTERN = re.compile(r"time=(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)")
+
+    def start(self, ffmpeg_path: str = r"D:\soft\ffmpeg-8.1.1-essentials_build\bin\ffmpeg.exe") -> None:
         input_path = self._task.file_path
         output_path = self._build_output_path()
 
         output_dir = Path(output_path).parent
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        codec_args = self._codec_args()
         args = [
             "-y",
             "-i", input_path,
-            "-progress", "pipe:1",
-            "-nostats",
-            "-loglevel", "warning",
+            "-stats_period", "0.1",
+            *codec_args,
             output_path,
         ]
 
@@ -71,7 +73,19 @@ class TranscodeWorker(QObject):
     def _build_output_path(self) -> str:
         p = Path(self._task.file_path)
         output_ext = self._task.output_format or ".mp4"
-        return str(p.with_stem(p.stem + "_转码").with_suffix(output_ext))
+        return str(p.with_stem(p.stem + "_output").with_suffix(output_ext))
+
+    def _codec_args(self) -> list[str]:
+        fmt = (self._task.output_format or ".mp4").lower()
+        if fmt in (".avi",):
+            return [
+                "-c:v", "mpeg4", "-q:v", "5",
+                "-c:a", "libmp3lame", "-b:a", "128k",
+            ]
+        return [
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-c:a", "aac", "-b:a", "128k",
+        ]
 
     @Slot()
     def _on_ready_read(self) -> None:
@@ -81,24 +95,32 @@ class TranscodeWorker(QObject):
         text = data.decode("utf-8", errors="replace")
         self._stdout_buffer += text
 
-        while "\n" in self._stdout_buffer:
-            line, self._stdout_buffer = self._stdout_buffer.split("\n", 1)
-            self._parse_line(line.strip())
+    @staticmethod
+    def _time_to_seconds(hours: str, minutes: str, seconds: str) -> float:
+        return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
 
     @Slot()
     def _on_ready_read_stderr(self) -> None:
         if not self._process:
             return
         data = self._process.readAllStandardError().data()
-        self._stderr_buffer += data.decode("utf-8", errors="replace")
+        chunk = data.decode("utf-8", errors="replace")
+        self._stderr_buffer += chunk
+
+        last_newline = self._stderr_buffer.rfind("\n")
+        if last_newline == -1:
+            return
+        process_part, self._stderr_buffer = self._stderr_buffer[:last_newline], self._stderr_buffer[last_newline + 1:]
+
+        for match in self._TIME_PATTERN.finditer(process_part):
+            hours, minutes, seconds = match.group(1), match.group(2), match.group(3)
+            current_time_s = self._time_to_seconds(hours, minutes, seconds)
+            if self._duration and self._duration > 0:
+                progress = min(100, int(current_time_s / self._duration * 100))
+                self.task_progress.emit(self._row, progress)
 
     def _parse_line(self, line: str) -> None:
-        out_time_match = re.match(r"^out_time_us=(\d+)$", line)
-        if out_time_match and self._duration and self._duration > 0:
-            out_time_us = int(out_time_match.group(1))
-            out_time_s = out_time_us / 1_000_000.0
-            progress = min(100, int(out_time_s / self._duration * 100))
-            self.task_progress.emit(self._row, progress)
+        pass
 
     @Slot(int, QProcess.ExitStatus)
     def _on_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
@@ -141,7 +163,7 @@ class TranscodeScheduler(QObject):
     task_failed = Signal(int, str)
     all_completed = Signal()
 
-    def __init__(self, parent: Optional[QObject] = None, max_concurrent: int = 1, ffmpeg_path: str = "ffmpeg"):
+    def __init__(self, parent: Optional[QObject] = None, max_concurrent: int = 1, ffmpeg_path: str = r"D:\soft\ffmpeg-8.1.1-essentials_build\bin\ffmpeg.exe"):
         super().__init__(parent)
         self._max_concurrent = max(1, max_concurrent)
         self._ffmpeg_path = ffmpeg_path
@@ -170,7 +192,7 @@ class TranscodeScheduler(QObject):
             if task.status != "就绪":
                 continue
             task.output_format = output_format
-            task.status = "排队中"
+            task.status = "等待中"
             task.progress = 0
             self._tasks[row] = task
             self._queue.append(row)
@@ -201,7 +223,7 @@ class TranscodeScheduler(QObject):
             self.all_completed.emit()
 
     def _start_worker(self, row: int, task: VideoTask) -> None:
-        task.status = "转码中"
+        task.status = "处理中"
         task.progress = 0
 
         worker = TranscodeWorker(row, task, self)
@@ -226,7 +248,7 @@ class TranscodeScheduler(QObject):
     def _on_worker_finished(self, row: int, exit_code: int) -> None:
         task = self._tasks.get(row)
         if task:
-            task.status = "完成"
+            task.status = "已完成"
             task.progress = 100
         self._cleanup_worker(row)
         self.task_completed.emit(row)
@@ -237,7 +259,7 @@ class TranscodeScheduler(QObject):
     def _on_worker_error(self, row: int, error_msg: str) -> None:
         task = self._tasks.get(row)
         if task:
-            task.status = "错误"
+            task.status = "失败"
             task.error = error_msg
         self._cleanup_worker(row)
         self.task_failed.emit(row, error_msg)

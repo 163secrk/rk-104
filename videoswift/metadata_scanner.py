@@ -25,7 +25,7 @@ class _ScanRunnable(QRunnable):
                 task.status = "非视频"
                 task.error = "不支持的文件格式"
         except Exception as e:
-            task.status = "错误"
+            task.status = "失败"
             task.error = str(e)
         self._callback(self._row, task)
 

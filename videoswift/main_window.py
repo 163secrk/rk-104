@@ -180,6 +180,7 @@ class MainWindow(QMainWindow):
             self._tasks.pop(row, None)
         self.table.remove_selected_rows()
         self._rebuild_tasks_index()
+        self.table._rebuild_progress_bars()
         self._update_count()
 
     def _on_clear(self) -> None:
@@ -212,9 +213,9 @@ class MainWindow(QMainWindow):
         total = len(self._tasks)
         ready = sum(1 for t in self._tasks.values() if t.status == "就绪")
         parsing = sum(1 for t in self._tasks.values() if t.status == "正在解析...")
-        transcoding = sum(1 for t in self._tasks.values() if t.status in ("转码中", "排队中"))
-        done = sum(1 for t in self._tasks.values() if t.status == "完成")
-        error = sum(1 for t in self._tasks.values() if t.status == "错误")
+        transcoding = sum(1 for t in self._tasks.values() if t.status in ("处理中", "等待中"))
+        done = sum(1 for t in self._tasks.values() if t.status == "已完成")
+        error = sum(1 for t in self._tasks.values() if t.status == "失败")
         parts = [f"共 {total} 个", f"就绪 {ready}"]
         if parsing > 0:
             parts.append(f"解析中 {parsing}")
@@ -223,7 +224,7 @@ class MainWindow(QMainWindow):
         if done > 0:
             parts.append(f"完成 {done}")
         if error > 0:
-            parts.append(f"错误 {error}")
+            parts.append(f"失败 {error}")
         self._count_label.setText(" | ".join(parts))
 
     def _set_transcoding_ui(self, active: bool) -> None:
@@ -250,7 +251,7 @@ class MainWindow(QMainWindow):
             self._scheduler.stop()
             self._set_transcoding_ui(False)
             for task in self._tasks.values():
-                if task.status in ("转码中", "排队中"):
+                if task.status in ("处理中", "等待中"):
                     task.status = "就绪"
                     task.progress = 0
             for row, task in self._tasks.items():
@@ -296,8 +297,8 @@ class MainWindow(QMainWindow):
 
     def _on_all_transcode_completed(self) -> None:
         self._set_transcoding_ui(False)
-        done = sum(1 for t in self._tasks.values() if t.status == "完成")
-        error = sum(1 for t in self._tasks.values() if t.status == "错误")
+        done = sum(1 for t in self._tasks.values() if t.status == "已完成")
+        error = sum(1 for t in self._tasks.values() if t.status == "失败")
         self._status_label.setText(f"转码完成 — 成功 {done} 个，失败 {error} 个")
 
     def dragEnterEvent(self, event) -> None:

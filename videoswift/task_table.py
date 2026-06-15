@@ -3,12 +3,20 @@ from typing import List, Optional
 
 from PySide6.QtCore import Qt, Signal, QMimeData
 from PySide6.QtGui import QDragEnterEvent, QDropEvent, QDragMoveEvent
-from PySide6.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView
+from PySide6.QtWidgets import (
+    QTableWidget, QTableWidgetItem, QHeaderView, QAbstractItemView, QProgressBar
+)
 
 from .models import VideoTask, VIDEO_EXTENSIONS
 
 
 COLUMN_LABELS = ["状态", "文件名", "大小", "格式", "进度", "绝对路径"]
+STATUS_COLUMN = 0
+NAME_COLUMN = 1
+SIZE_COLUMN = 2
+EXT_COLUMN = 3
+PROGRESS_COLUMN = 4
+PATH_COLUMN = 5
 
 
 class TaskTableWidget(QTableWidget):
@@ -22,18 +30,20 @@ class TaskTableWidget(QTableWidget):
         self.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.setAcceptDrops(True)
         self.setDragDropMode(QAbstractItemView.DropOnly)
-        self.verticalHeader().setDefaultSectionSize(28)
+        self.verticalHeader().setDefaultSectionSize(30)
 
         header = self.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(4, QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(5, QHeaderView.Stretch)
+        header.setSectionResizeMode(STATUS_COLUMN, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(NAME_COLUMN, QHeaderView.Stretch)
+        header.setSectionResizeMode(SIZE_COLUMN, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(EXT_COLUMN, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(PROGRESS_COLUMN, QHeaderView.Interactive)
+        self.setColumnWidth(PROGRESS_COLUMN, 180)
+        header.setSectionResizeMode(PATH_COLUMN, QHeaderView.Stretch)
 
         self._existing_paths: set[str] = set()
         self._drag_hover_inside = False
+        self._progress_bars: dict[int, QProgressBar] = {}
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
         if event.mimeData().hasUrls():
@@ -92,9 +102,35 @@ class TaskTableWidget(QTableWidget):
             pass
         return results
 
+    def _create_progress_bar(self) -> QProgressBar:
+        bar = QProgressBar()
+        bar.setRange(0, 100)
+        bar.setValue(0)
+        bar.setTextVisible(True)
+        bar.setFormat("%p%")
+        bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #bbb;
+                border-radius: 4px;
+                text-align: center;
+                background: #f5f5f5;
+                height: 20px;
+            }
+            QProgressBar::chunk {
+                background: #4a90e2;
+                border-radius: 3px;
+            }
+        """)
+        return bar
+
     def add_task_row(self, task: VideoTask) -> int:
         row = self.rowCount()
         self.insertRow(row)
+
+        progress_bar = self._create_progress_bar()
+        self._progress_bars[row] = progress_bar
+        self.setCellWidget(row, PROGRESS_COLUMN, progress_bar)
+
         self._update_row(row, task)
         return row
 
@@ -102,31 +138,105 @@ class TaskTableWidget(QTableWidget):
         if 0 <= row < self.rowCount():
             self._update_row(row, task)
 
+    def _apply_row_style(self, row: int, is_error: bool) -> None:
+        for col in range(self.columnCount()):
+            item = self.item(row, col)
+            if item:
+                if is_error:
+                    item.setForeground(Qt.red)
+                else:
+                    item.setForeground(Qt.black)
+
     def _update_row(self, row: int, task: VideoTask) -> None:
         status_item = QTableWidgetItem(task.status)
-        if task.status == "错误" and task.error:
+        if (task.status == "失败" or task.status == "错误") and task.error:
             status_item.setToolTip(task.error)
         name_item = QTableWidgetItem(task.file_name or Path(task.file_path).name)
         size_item = QTableWidgetItem(VideoTask.format_size(task.file_size))
         ext_item = QTableWidgetItem(task.extension.lstrip(".").upper())
-        progress_text = f"{task.progress}%" if task.progress > 0 else ""
-        progress_item = QTableWidgetItem(progress_text)
         path_item = QTableWidgetItem(task.file_path)
 
-        for col, item in enumerate([status_item, name_item, size_item, ext_item, progress_item, path_item]):
-            item.setTextAlignment(Qt.AlignVCenter | (Qt.AlignHCenter if col in (0, 2, 3, 4) else Qt.AlignLeft))
-            if task.status == "错误":
-                item.setForeground(Qt.red)
+        items = [status_item, name_item, size_item, ext_item, path_item]
+        cols = [STATUS_COLUMN, NAME_COLUMN, SIZE_COLUMN, EXT_COLUMN, PATH_COLUMN]
+
+        for col, item in zip(cols, items):
+            item.setTextAlignment(
+                Qt.AlignVCenter | (Qt.AlignHCenter if col in (STATUS_COLUMN, SIZE_COLUMN, EXT_COLUMN) else Qt.AlignLeft)
+            )
             self.setItem(row, col, item)
 
+        is_error = task.status in ("失败", "错误")
+        self._apply_row_style(row, is_error)
+
+        progress_bar = self._progress_bars.get(row)
+        if progress_bar is None:
+            progress_bar = self._create_progress_bar()
+            self._progress_bars[row] = progress_bar
+            self.setCellWidget(row, PROGRESS_COLUMN, progress_bar)
+        progress_bar.setValue(task.progress)
+
+        if task.status == "已完成" or task.progress == 100:
+            progress_bar.setStyleSheet("""
+                QProgressBar {
+                    border: 1px solid #bbb;
+                    border-radius: 4px;
+                    text-align: center;
+                    background: #f5f5f5;
+                    height: 20px;
+                }
+                QProgressBar::chunk {
+                    background: #5cb85c;
+                    border-radius: 3px;
+                }
+            """)
+        elif task.status in ("失败", "错误"):
+            progress_bar.setStyleSheet("""
+                QProgressBar {
+                    border: 1px solid #bbb;
+                    border-radius: 4px;
+                    text-align: center;
+                    background: #f5f5f5;
+                    height: 20px;
+                }
+                QProgressBar::chunk {
+                    background: #d9534f;
+                    border-radius: 3px;
+                }
+            """)
+        else:
+            progress_bar.setStyleSheet("""
+                QProgressBar {
+                    border: 1px solid #bbb;
+                    border-radius: 4px;
+                    text-align: center;
+                    background: #f5f5f5;
+                    height: 20px;
+                }
+                QProgressBar::chunk {
+                    background: #4a90e2;
+                    border-radius: 3px;
+                }
+            """)
+
     def clear_tasks(self) -> None:
+        self._progress_bars.clear()
         self.setRowCount(0)
         self._existing_paths.clear()
 
     def remove_selected_rows(self) -> None:
         rows = sorted({index.row() for index in self.selectedIndexes()}, reverse=True)
         for row in rows:
-            path_item = self.item(row, 5)
+            path_item = self.item(row, PATH_COLUMN)
             if path_item:
                 self._existing_paths.discard(path_item.text())
+            self._progress_bars.pop(row, None)
             self.removeRow(row)
+        self._rebuild_progress_bars()
+
+    def _rebuild_progress_bars(self) -> None:
+        new_bars: dict[int, QProgressBar] = {}
+        for new_row in range(self.rowCount()):
+            bar = self.cellWidget(new_row, PROGRESS_COLUMN)
+            if isinstance(bar, QProgressBar):
+                new_bars[new_row] = bar
+        self._progress_bars = new_bars

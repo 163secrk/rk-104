@@ -34,7 +34,7 @@ class VideoTask:
         except OSError:
             self.file_size = 0
             self.error = "无法读取文件"
-            self.status = "错误"
+            self.status = "失败"
 
     @property
     def is_video(self) -> bool:
