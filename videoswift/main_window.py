@@ -291,6 +291,7 @@ class MainWindow(QMainWindow):
         task = self._tasks.get(row)
         if task:
             self.table.update_task_row(row, task)
+            self._status_label.setText(f"转码失败：{task.file_name} — {error_msg}")
         self._update_count()
 
     def _on_all_transcode_completed(self) -> None:

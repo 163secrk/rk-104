@@ -104,6 +104,8 @@ class TaskTableWidget(QTableWidget):
 
     def _update_row(self, row: int, task: VideoTask) -> None:
         status_item = QTableWidgetItem(task.status)
+        if task.status == "错误" and task.error:
+            status_item.setToolTip(task.error)
         name_item = QTableWidgetItem(task.file_name or Path(task.file_path).name)
         size_item = QTableWidgetItem(VideoTask.format_size(task.file_size))
         ext_item = QTableWidgetItem(task.extension.lstrip(".").upper())

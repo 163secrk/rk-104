@@ -12,13 +12,23 @@ class TranscodeWorker(QObject):
     task_finished = Signal(int, int)
     task_error = Signal(int, str)
 
+    _ERROR_MESSAGES = {
+        QProcess.FailedToStart: "无法启动 FFmpeg，请确认已安装并添加到 PATH",
+        QProcess.Crashed: "FFmpeg 进程崩溃",
+        QProcess.Timedout: "FFmpeg 进程超时",
+        QProcess.WriteError: "FFmpeg 写入错误",
+        QProcess.ReadError: "FFmpeg 读取错误",
+    }
+
     def __init__(self, row: int, task: VideoTask, parent: Optional[QObject] = None):
         super().__init__(parent)
         self._row = row
         self._task = task
         self._process: Optional[QProcess] = None
         self._duration: Optional[float] = task.duration
+        self._stdout_buffer = ""
         self._stderr_buffer = ""
+        self._error_handled = False
 
     @property
     def row(self) -> int:
@@ -45,8 +55,9 @@ class TranscodeWorker(QObject):
         ]
 
         self._process = QProcess(self)
-        self._process.setProcessChannelMode(QProcess.MergedChannels)
+        self._process.setProcessChannelMode(QProcess.SeparateChannels)
         self._process.readyReadStandardOutput.connect(self._on_ready_read)
+        self._process.readyReadStandardError.connect(self._on_ready_read_stderr)
         self._process.finished.connect(self._on_finished)
         self._process.errorOccurred.connect(self._on_error)
 
@@ -68,11 +79,18 @@ class TranscodeWorker(QObject):
             return
         data = self._process.readAllStandardOutput().data()
         text = data.decode("utf-8", errors="replace")
-        self._stderr_buffer += text
+        self._stdout_buffer += text
 
-        while "\n" in self._stderr_buffer:
-            line, self._stderr_buffer = self._stderr_buffer.split("\n", 1)
+        while "\n" in self._stdout_buffer:
+            line, self._stdout_buffer = self._stdout_buffer.split("\n", 1)
             self._parse_line(line.strip())
+
+    @Slot()
+    def _on_ready_read_stderr(self) -> None:
+        if not self._process:
+            return
+        data = self._process.readAllStandardError().data()
+        self._stderr_buffer += data.decode("utf-8", errors="replace")
 
     def _parse_line(self, line: str) -> None:
         out_time_match = re.match(r"^out_time_us=(\d+)$", line)
@@ -84,22 +102,36 @@ class TranscodeWorker(QObject):
 
     @Slot(int, QProcess.ExitStatus)
     def _on_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
+        if self._error_handled:
+            return
+
         if exit_status == QProcess.CrashExit:
-            self.task_error.emit(self._row, "FFmpeg 进程崩溃")
+            stderr = self._collect_stderr()
+            msg = "FFmpeg 进程崩溃"
+            if stderr:
+                msg += f": {stderr[:200]}"
+            self.task_error.emit(self._row, msg)
             return
+
         if exit_code != 0:
-            stderr = ""
-            if self._process:
-                stderr = self._process.readAllStandardError().data().decode("utf-8", errors="replace")
-            self.task_error.emit(self._row, f"FFmpeg 退出码 {exit_code}: {stderr.strip()[:200]}")
+            stderr = self._collect_stderr()
+            self.task_error.emit(self._row, f"FFmpeg 退出码 {exit_code}: {stderr[:200]}")
             return
+
         self.task_progress.emit(self._row, 100)
         self.task_finished.emit(self._row, exit_code)
 
+    def _collect_stderr(self) -> str:
+        if self._process:
+            remaining = self._process.readAllStandardError().data().decode("utf-8", errors="replace")
+            self._stderr_buffer += remaining
+        return self._stderr_buffer.strip()
+
     @Slot(QProcess.ProcessError)
     def _on_error(self, error: QProcess.ProcessError) -> None:
-        if error == QProcess.FailedToStart:
-            self.task_error.emit(self._row, "无法启动 FFmpeg，请确认已安装并添加到 PATH")
+        self._error_handled = True
+        msg = self._ERROR_MESSAGES.get(error, f"FFmpeg 未知错误 ({error})")
+        self.task_error.emit(self._row, msg)
 
 
 class TranscodeScheduler(QObject):
