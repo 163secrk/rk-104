@@ -306,8 +306,15 @@ class MainWindow(QMainWindow):
             return
 
         output_format = self.combo_format.currentData()
-        ready_tasks = {row: task for row, task in self._tasks.items() if task.status == "就绪"}
+
+        selected_rows = {index.row() for index in self.table.selectedIndexes()}
+        if selected_rows:
+            ready_tasks = {row: self._tasks[row] for row in selected_rows if row in self._tasks and self._tasks[row].status == "就绪"}
+        else:
+            ready_tasks = {row: task for row, task in self._tasks.items() if task.status == "就绪"}
+
         if not ready_tasks:
+            QMessageBox.information(self, "提示", "没有可转码的就绪任务。")
             return
 
         self._set_transcoding_ui(True)

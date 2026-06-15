@@ -78,7 +78,8 @@ class VideoInfoPanel(QWidget):
         header_layout.setSpacing(8)
 
         title_label = QLabel("视频详细信息", header)
-        title_font = QFont("Microsoft YaHei", 11, QFont.Bold)
+        title_font = QFont("Microsoft YaHei", 11)
+        title_font.setBold(True)
         title_label.setFont(title_font)
         title_label.setStyleSheet("color: #333;")
         header_layout.addWidget(title_label)
@@ -162,7 +163,9 @@ class VideoInfoPanel(QWidget):
         loading_item = QTreeWidgetItem(["正在读取视频信息...", ""])
         loading_item.setForeground(0, Qt.gray)
         loading_item.setForeground(1, Qt.gray)
-        loading_item.setFont(0, QFont("Microsoft YaHei", 9, QFont.StyleItalic))
+        loading_font = QFont("Microsoft YaHei", 9)
+        loading_font.setItalic(True)
+        loading_item.setFont(0, loading_font)
         self.tree.addTopLevelItem(loading_item)
 
     def _clear_tree(self) -> None:
@@ -180,7 +183,8 @@ class VideoInfoPanel(QWidget):
 
         for section_name, fields in display_data.items():
             section_item = QTreeWidgetItem([section_name, ""])
-            section_font = QFont("Microsoft YaHei", 10, QFont.Bold)
+            section_font = QFont("Microsoft YaHei", 10)
+            section_font.setBold(True)
             section_item.setFont(0, section_font)
             section_item.setForeground(0, Qt.darkBlue)
             section_item.setExpanded(True)
