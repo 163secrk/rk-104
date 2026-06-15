@@ -116,6 +116,7 @@ class MainWindow(QMainWindow):
         self.table.files_dropped.connect(self._on_files_dropped)
         self.table.row_clicked.connect(self._on_row_clicked)
         self.table.row_double_clicked.connect(self._on_row_double_clicked)
+        self.table.task_trim_changed.connect(self._on_task_trim_changed)
         self.btn_add_files.clicked.connect(self._on_add_files)
         self.btn_add_folder.clicked.connect(self._on_add_folder)
         self.btn_remove.clicked.connect(self._on_remove_selected)
@@ -146,6 +147,21 @@ class MainWindow(QMainWindow):
 
     def _on_info_panel_close(self) -> None:
         self.info_panel.clear_panel()
+
+    def _on_task_trim_changed(self, row: int, task: VideoTask) -> None:
+        if row in self._tasks:
+            self._tasks[row] = task
+            self._update_count()
+            trim_error = task.validate_trim()
+            if trim_error:
+                task.status = "错误"
+                task.error = trim_error
+            elif task.status == "错误" and task.error and "时间" in task.error:
+                task.status = "就绪"
+                task.error = None
+            ready_count = sum(1 for t in self._tasks.values() if t.status == "就绪")
+            if not self._scheduler.is_running:
+                self.btn_start.setEnabled(ready_count > 0)
 
     def _on_add_files(self) -> None:
         files, _ = QFileDialog.getOpenFileNames(

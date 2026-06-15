@@ -1,10 +1,35 @@
 import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QObject, QProcess, Signal, Slot
 
 from .models import VideoTask
+
+
+_LOSSLESS_COMPATIBLE = {
+    ".mp4": {".mp4", ".m4v"},
+    ".mkv": {".mkv"},
+    ".mov": {".mov"},
+    ".avi": {".avi"},
+    ".ts": {".ts"},
+}
+
+
+def _can_use_lossless_copy(input_ext: str, output_ext: str) -> bool:
+    input_ext = input_ext.lower()
+    output_ext = output_ext.lower()
+    if input_ext == output_ext:
+        return True
+    compatible = _LOSSLESS_COMPATIBLE.get(input_ext, set())
+    return output_ext in compatible
+
+
+def _format_ffmpeg_time(seconds: float) -> str:
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
 
 
 class TranscodeWorker(QObject):
@@ -25,10 +50,13 @@ class TranscodeWorker(QObject):
         self._row = row
         self._task = task
         self._process: Optional[QProcess] = None
-        self._duration: Optional[float] = task.duration
+        self._duration: Optional[float] = task.effective_duration
         self._stdout_buffer = ""
         self._stderr_buffer = ""
         self._error_handled = False
+        self._use_lossless_copy = False
+        self._fallback_attempted = False
+        self._ffmpeg_path = r"D:\soft\ffmpeg-8.1.1-essentials_build\bin\ffmpeg.exe"
 
     @property
     def row(self) -> int:
@@ -41,20 +69,49 @@ class TranscodeWorker(QObject):
     _TIME_PATTERN = re.compile(r"time=(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)")
 
     def start(self, ffmpeg_path: str = r"D:\soft\ffmpeg-8.1.1-essentials_build\bin\ffmpeg.exe") -> None:
+        self._ffmpeg_path = ffmpeg_path
         input_path = self._task.file_path
         output_path = self._build_output_path()
 
         output_dir = Path(output_path).parent
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        args: List[str] = ["-y", "-stats_period", "0.1"]
+
+        has_trim = self._task.has_trim
+        output_ext = (self._task.output_format or ".mp4").lower()
+        input_ext = self._task.extension.lower()
+        can_copy = _can_use_lossless_copy(input_ext, output_ext)
+
+        if has_trim and self._fallback_attempted:
+            self._use_lossless_copy = False
+        else:
+            self._use_lossless_copy = can_copy
+
+        if has_trim and self._task.in_point is not None:
+            args.extend(["-ss", _format_ffmpeg_time(self._task.in_point)])
+
+        args.extend(["-i", input_path])
+
+        if has_trim:
+            if self._use_lossless_copy:
+                args.extend(["-avoid_negative_ts", "make_zero", "-fflags", "+genpts"])
+                if self._task.out_point is not None and self._task.in_point is not None:
+                    dur = self._task.out_point - self._task.in_point
+                    args.extend(["-t", _format_ffmpeg_time(dur)])
+                elif self._task.out_point is not None:
+                    args.extend(["-to", _format_ffmpeg_time(self._task.out_point)])
+            else:
+                if self._task.out_point is not None:
+                    if self._task.in_point is not None:
+                        dur = self._task.out_point - self._task.in_point
+                        args.extend(["-t", _format_ffmpeg_time(dur)])
+                    else:
+                        args.extend(["-to", _format_ffmpeg_time(self._task.out_point)])
+
         codec_args = self._codec_args()
-        args = [
-            "-y",
-            "-i", input_path,
-            "-stats_period", "0.1",
-            *codec_args,
-            output_path,
-        ]
+        args.extend(codec_args)
+        args.append(output_path)
 
         self._process = QProcess(self)
         self._process.setProcessChannelMode(QProcess.SeparateChannels)
@@ -73,9 +130,14 @@ class TranscodeWorker(QObject):
     def _build_output_path(self) -> str:
         p = Path(self._task.file_path)
         output_ext = self._task.output_format or ".mp4"
-        return str(p.with_stem(p.stem + "_output").with_suffix(output_ext))
+        suffix = "_output"
+        if self._task.has_trim:
+            suffix = "_trim"
+        return str(p.with_stem(p.stem + suffix).with_suffix(output_ext))
 
     def _codec_args(self) -> list[str]:
+        if self._use_lossless_copy:
+            return ["-c", "copy", "-movflags", "+faststart"]
         fmt = (self._task.output_format or ".mp4").lower()
         if fmt in (".avi",):
             return [
@@ -122,12 +184,26 @@ class TranscodeWorker(QObject):
     def _parse_line(self, line: str) -> None:
         pass
 
+    def _try_fallback_reencode(self) -> None:
+        self._fallback_attempted = True
+        self._use_lossless_copy = False
+        self._stderr_buffer = ""
+        self._stdout_buffer = ""
+        self._error_handled = False
+        if self._process:
+            self._process.deleteLater()
+            self._process = None
+        self.start(self._ffmpeg_path)
+
     @Slot(int, QProcess.ExitStatus)
     def _on_finished(self, exit_code: int, exit_status: QProcess.ExitStatus) -> None:
         if self._error_handled:
             return
 
         if exit_status == QProcess.CrashExit:
+            if self._use_lossless_copy and not self._fallback_attempted:
+                self._try_fallback_reencode()
+                return
             stderr = self._collect_stderr()
             msg = "FFmpeg 进程崩溃"
             if stderr:
@@ -136,6 +212,9 @@ class TranscodeWorker(QObject):
             return
 
         if exit_code != 0:
+            if self._use_lossless_copy and not self._fallback_attempted:
+                self._try_fallback_reencode()
+                return
             stderr = self._collect_stderr()
             self.task_error.emit(self._row, f"FFmpeg 退出码 {exit_code}: {stderr[:200]}")
             return
@@ -151,6 +230,9 @@ class TranscodeWorker(QObject):
 
     @Slot(QProcess.ProcessError)
     def _on_error(self, error: QProcess.ProcessError) -> None:
+        if self._use_lossless_copy and not self._fallback_attempted and error != QProcess.FailedToStart:
+            self._try_fallback_reencode()
+            return
         self._error_handled = True
         msg = self._ERROR_MESSAGES.get(error, f"FFmpeg 未知错误 ({error})")
         self.task_error.emit(self._row, msg)

@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Dict, Any
+import re
 
 
 VIDEO_EXTENSIONS = {
@@ -11,6 +12,35 @@ VIDEO_EXTENSIONS = {
 
 
 OUTPUT_FORMATS = {".mp4", ".mkv", ".avi"}
+
+_TIME_PATTERN = re.compile(r"^(\d{1,2}):(\d{2}):(\d{2}(?:\.\d+)?)$")
+
+
+def parse_time_str(time_str: str) -> Optional[float]:
+    if not time_str or not time_str.strip():
+        return None
+    time_str = time_str.strip()
+    m = _TIME_PATTERN.match(time_str)
+    if not m:
+        return None
+    try:
+        h = int(m.group(1))
+        m_ = int(m.group(2))
+        s = float(m.group(3))
+        if m_ >= 60 or s >= 60:
+            return None
+        return h * 3600.0 + m_ * 60.0 + s
+    except (ValueError, TypeError):
+        return None
+
+
+def format_seconds(seconds: Optional[float]) -> str:
+    if seconds is None or seconds < 0:
+        return ""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{secs:06.3f}"
 
 
 @dataclass
@@ -24,6 +54,8 @@ class VideoTask:
     error: Optional[str] = None
     output_format: str = ""
     progress: int = 0
+    in_point: Optional[float] = None
+    out_point: Optional[float] = None
 
     def resolve_basic(self) -> None:
         p = Path(self.file_path)
@@ -51,6 +83,41 @@ class VideoTask:
             size /= 1024.0
             idx += 1
         return f"{size:.2f} {units[idx]}"
+
+    @property
+    def has_trim(self) -> bool:
+        return self.in_point is not None or self.out_point is not None
+
+    @property
+    def trim_duration(self) -> Optional[float]:
+        if not self.has_trim:
+            return None
+        start = self.in_point if self.in_point is not None else 0.0
+        end = self.out_point if self.out_point is not None else (self.duration or 0.0)
+        dur = end - start
+        return dur if dur > 0 else None
+
+    @property
+    def effective_duration(self) -> Optional[float]:
+        if self.has_trim and self.trim_duration:
+            return self.trim_duration
+        return self.duration
+
+    def validate_trim(self) -> Optional[str]:
+        if self.in_point is None and self.out_point is None:
+            return None
+        if self.in_point is not None and self.in_point < 0:
+            return "起始时间不能为负数"
+        if self.out_point is not None and self.out_point < 0:
+            return "结束时间不能为负数"
+        if self.in_point is not None and self.out_point is not None and self.out_point <= self.in_point:
+            return "结束时间必须大于起始时间"
+        if self.duration is not None:
+            if self.in_point is not None and self.in_point >= self.duration:
+                return "起始时间超出视频总时长"
+            if self.out_point is not None and self.out_point > self.duration:
+                return "结束时间超出视频总时长"
+        return None
 
 
 @dataclass
