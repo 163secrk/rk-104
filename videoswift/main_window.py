@@ -5,7 +5,8 @@ from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QAction, QIcon
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
-    QStatusBar, QLabel, QMessageBox, QFileDialog, QToolBar, QComboBox
+    QStatusBar, QLabel, QMessageBox, QFileDialog, QToolBar, QComboBox,
+    QSplitter
 )
 
 from . import __app_name__, __version__
@@ -13,6 +14,7 @@ from .models import VideoTask, OUTPUT_FORMATS
 from .task_table import TaskTableWidget
 from .metadata_scanner import MetadataScanner
 from .transcode_scheduler import TranscodeScheduler
+from .video_info_panel import VideoInfoPanel
 
 
 class MainWindow(QMainWindow):
@@ -40,8 +42,19 @@ class MainWindow(QMainWindow):
         toolbar = self._create_toolbar()
         main_layout.addWidget(toolbar)
 
+        splitter = QSplitter(Qt.Horizontal, self)
+        splitter.setHandleWidth(2)
+        splitter.setStyleSheet("QSplitter::handle { background: #e0e0e0; }")
+
         self.table = TaskTableWidget(self)
-        main_layout.addWidget(self.table, stretch=1)
+        splitter.addWidget(self.table)
+
+        self.info_panel = VideoInfoPanel(self)
+        splitter.addWidget(self.info_panel)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 1)
+
+        main_layout.addWidget(splitter, stretch=1)
 
         bottom_bar = self._create_bottom_bar()
         main_layout.addLayout(bottom_bar)
@@ -52,6 +65,8 @@ class MainWindow(QMainWindow):
         self._count_label = QLabel("任务数：0")
         status_bar.addWidget(self._status_label)
         status_bar.addPermanentWidget(self._count_label)
+
+        self.info_panel.clear_panel()
 
     def _create_toolbar(self) -> QWidget:
         bar = QWidget(self)
@@ -99,6 +114,8 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self.table.files_dropped.connect(self._on_files_dropped)
+        self.table.row_clicked.connect(self._on_row_clicked)
+        self.table.row_double_clicked.connect(self._on_row_double_clicked)
         self.btn_add_files.clicked.connect(self._on_add_files)
         self.btn_add_folder.clicked.connect(self._on_add_folder)
         self.btn_remove.clicked.connect(self._on_remove_selected)
@@ -114,10 +131,21 @@ class MainWindow(QMainWindow):
         self._scheduler.task_failed.connect(self._on_transcode_failed)
         self._scheduler.all_completed.connect(self._on_all_transcode_completed)
 
+        self.info_panel.close_requested.connect(self._on_info_panel_close)
+
     def _on_files_dropped(self, paths: List[str]) -> None:
         if not paths:
             return
         self._add_paths(paths)
+
+    def _on_row_clicked(self, row: int, task: VideoTask) -> None:
+        self.info_panel.set_task(task)
+
+    def _on_row_double_clicked(self, row: int, task: VideoTask) -> None:
+        self.info_panel.set_task(task)
+
+    def _on_info_panel_close(self) -> None:
+        self.info_panel.clear_panel()
 
     def _on_add_files(self) -> None:
         files, _ = QFileDialog.getOpenFileNames(
@@ -195,6 +223,7 @@ class MainWindow(QMainWindow):
             self.table.clear_tasks()
             self._update_count()
             self.btn_start.setEnabled(False)
+            self.info_panel.clear_panel()
 
     def _rebuild_tasks_index(self) -> None:
         new_tasks: Dict[int, VideoTask] = {}

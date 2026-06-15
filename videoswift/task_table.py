@@ -21,6 +21,8 @@ PATH_COLUMN = 5
 
 class TaskTableWidget(QTableWidget):
     files_dropped = Signal(list)
+    row_clicked = Signal(int, object)
+    row_double_clicked = Signal(int, object)
 
     def __init__(self, parent=None):
         super().__init__(0, len(COLUMN_LABELS), parent)
@@ -31,6 +33,10 @@ class TaskTableWidget(QTableWidget):
         self.setAcceptDrops(True)
         self.setDragDropMode(QAbstractItemView.DropOnly)
         self.verticalHeader().setDefaultSectionSize(30)
+
+        self._tasks: dict[int, VideoTask] = {}
+        self.clicked.connect(self._on_clicked)
+        self.doubleClicked.connect(self._on_double_clicked)
 
         header = self.horizontalHeader()
         header.setSectionResizeMode(STATUS_COLUMN, QHeaderView.ResizeToContents)
@@ -126,6 +132,7 @@ class TaskTableWidget(QTableWidget):
     def add_task_row(self, task: VideoTask) -> int:
         row = self.rowCount()
         self.insertRow(row)
+        self._tasks[row] = task
 
         progress_bar = self._create_progress_bar()
         self._progress_bars[row] = progress_bar
@@ -134,8 +141,21 @@ class TaskTableWidget(QTableWidget):
         self._update_row(row, task)
         return row
 
+    def _on_clicked(self, index) -> None:
+        row = index.row()
+        task = self._tasks.get(row)
+        if task:
+            self.row_clicked.emit(row, task)
+
+    def _on_double_clicked(self, index) -> None:
+        row = index.row()
+        task = self._tasks.get(row)
+        if task:
+            self.row_double_clicked.emit(row, task)
+
     def update_task_row(self, row: int, task: VideoTask) -> None:
         if 0 <= row < self.rowCount():
+            self._tasks[row] = task
             self._update_row(row, task)
 
     def _apply_row_style(self, row: int, is_error: bool) -> None:
@@ -220,6 +240,7 @@ class TaskTableWidget(QTableWidget):
 
     def clear_tasks(self) -> None:
         self._progress_bars.clear()
+        self._tasks.clear()
         self.setRowCount(0)
         self._existing_paths.clear()
 
@@ -230,8 +251,10 @@ class TaskTableWidget(QTableWidget):
             if path_item:
                 self._existing_paths.discard(path_item.text())
             self._progress_bars.pop(row, None)
+            self._tasks.pop(row, None)
             self.removeRow(row)
         self._rebuild_progress_bars()
+        self._rebuild_tasks_index()
 
     def _rebuild_progress_bars(self) -> None:
         new_bars: dict[int, QProgressBar] = {}
@@ -240,3 +263,16 @@ class TaskTableWidget(QTableWidget):
             if isinstance(bar, QProgressBar):
                 new_bars[new_row] = bar
         self._progress_bars = new_bars
+
+    def _rebuild_tasks_index(self) -> None:
+        new_tasks: dict[int, VideoTask] = {}
+        for new_row in range(self.rowCount()):
+            path_item = self.item(new_row, PATH_COLUMN)
+            if not path_item:
+                continue
+            path = path_item.text()
+            for task in self._tasks.values():
+                if task.file_path == path:
+                    new_tasks[new_row] = task
+                    break
+        self._tasks = new_tasks
